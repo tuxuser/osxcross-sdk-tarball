@@ -1,0 +1,86 @@
+name: build
+
+on:
+  push:
+    branches: [ "master" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "master" ]
+
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    outputs:
+      sdk_version: ${{ steps.detect.outputs.sdk_version }}
+      sdk_file: ${{ steps.detect.outputs.sdk_file }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download script
+        run: |
+          curl -fsSL -o gen_sdk_package.sh https://raw.githubusercontent.com/tpoechtrager/osxcross/refs/heads/master/tools/gen_sdk_package.sh
+          chmod +x gen_sdk_package.sh
+
+      - name: Run script
+        run: ./gen_sdk_package.sh
+
+      - name: List files
+        run: ls -l
+
+      - name: Detect SDK version
+        id: detect
+        run: |
+          sdk_file=$(ls MacOSX*.sdk.tar.* MacOS*.sdk.tar.* 2>/dev/null | sort | tail -n 1 || true)
+          if [ -z "$sdk_file" ]; then
+            echo "No SDK tarball found" >&2
+            exit 1
+          fi
+          sdk_version=$(echo "$sdk_file" | sed -E 's/.*MacOSX?([0-9]+(\.[0-9]+)*).*/\1/')
+          if [ -z "$sdk_version" ]; then
+            echo "Could not parse SDK version from $sdk_file" >&2
+            exit 1
+          fi
+          echo "sdk_file=$sdk_file" >> "$GITHUB_OUTPUT"
+          echo "sdk_version=$sdk_version" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SDK tarballs
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdk-tarballs
+          path: |
+            MacOSX*.sdk.tar.*
+            MacOS*.sdk.tar.*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download SDK tarballs
+        uses: actions/download-artifact@v8
+        with:
+          name: sdk-tarballs
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: true
+          tag_name: v${{ needs.build.outputs.sdk_version }}
+          name: SDK ${{ needs.build.outputs.sdk_version }}
+          body: |
+            Draft SDK release for osxcross.
+            Detected SDK version: ${{ needs.build.outputs.sdk_version }}
+            Trigger ref: ${{ github.ref_name }}
+            If the trigger tag differs from the detected version, check the runner Xcode version before publishing.
+          files: |
+            MacOSX*.sdk.tar.*
+            MacOS*.sdk.tar.*
